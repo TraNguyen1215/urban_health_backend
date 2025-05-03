@@ -1,0 +1,44 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Thư mục chứa môi trường ảo
+env/
+venv/
+ENV/
+.venv/
+
+# Các tệp cấu hình IDE
+.idea/
+*.sublime-project
+*.sublime-workspace
+.vscode/
+*.code-workspace
+
+# Các tệp log
+*.log
+
+# Tệp nhạy cảm
+*.env
+
+# Các tệp tạm thời
+*.tmp
+*.bak
+
+# Thư mục chứa dữ liệu tạm thời
+tmp/
+temp/
+
+# Thư mục chứa các tệp đã biên dịch
+build/
+dist/
+
+# Tệp hệ thống
+.DS_Store
+Thumbs.db
+news/files/
+
+bin/
+Lib/
+Scripts/
+pyvenv.cfg
