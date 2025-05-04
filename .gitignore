@@ -40,5 +40,4 @@ news/files/
 
 bin/
 Lib/
-Scripts/
 pyvenv.cfg

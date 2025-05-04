@@ -1,6 +1,6 @@
 from flask import Blueprint
 
 # Khởi tạo blueprint cho monitoring well
-layers_bp = Blueprint('layers', __name__)
+analysis_bp = Blueprint('analysis_api', __name__)
 
 from . import routes

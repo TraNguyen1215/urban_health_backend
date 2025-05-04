@@ -5,7 +5,7 @@ from flask import request, Response
 from . import wms_bp
 from ...utils.db_utils import *
 
-GEOSERVER_WMS_URL = os.getenv('GEOSERVER_URL') + '/nawapi/wms'
+GEOSERVER_WMS_URL = os.getenv('GEOSERVER_URL') + '/health_map/wms'
 
 
 @wms_bp.route('/', methods=['GET'])
