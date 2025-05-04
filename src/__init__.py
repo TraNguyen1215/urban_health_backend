@@ -12,7 +12,9 @@ def create_app():
 
      from .api.analysis import analysis_bp
      app.register_blueprint(analysis_bp, url_prefix='/api/analysis')
-
+     
+     from .api.data import data_bp
+     app.register_blueprint(data_bp, url_prefix='/api/data')
 
      from .api.wfs import wfs_bp
      app.register_blueprint(wfs_bp, url_prefix='/map/wfs')
