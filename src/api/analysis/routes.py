@@ -90,7 +90,7 @@ def population_in_buffer():
 def population_stats():
     ftype = request.args.get('type')
     where = "WHERE access_health.amenity = %s" if ftype else ""
-    params = [ftype, ftype] if ftype else []
+    params = [ftype] if ftype else []
 
     sql = f"""
         WITH distances AS (
@@ -102,13 +102,13 @@ def population_stats():
             WHERE population_points.population_count > 0
         )
         SELECT CASE
-                    WHEN min_dist <= 1000 THEN '0-1km'
-                    WHEN min_dist <= 3000 THEN '1-3km'
-                    WHEN min_dist <= 5000 THEN '3-5km'
-                    WHEN min_dist <= 10000 THEN '5-10km'
-                    ELSE '>10km'
-               END AS distance_bin,
-               SUM(population_count)::bigint AS total_population
+                WHEN min_dist <= 1000 THEN '0-1km'
+                WHEN min_dist <= 3000 THEN '1-3km'
+                WHEN min_dist <= 5000 THEN '3-5km'
+                WHEN min_dist <= 10000 THEN '5-10km'
+                ELSE '>10km'
+            END AS distance_bin,
+            SUM(population_count)::bigint AS total_population
         FROM distances
         WHERE min_dist IS NOT NULL
         GROUP BY distance_bin
@@ -120,6 +120,8 @@ def population_stats():
         cur = conn.cursor()
         cur.execute(sql.format(where=where), params)
         rows = cur.fetchall()
+        
+        print(rows)
         
         # Ensure all bins are returned even if empty
         bins = ['0-1km', '1-3km', '3-5km', '5-10km', '>10km']
