@@ -148,3 +148,77 @@ def search_facility_by_name():
     finally:
         if conn:
             conn.close()
+            
+# lấy riêng một cơ sở y tế theo id
+@data_bp.route('/facility', methods=['GET'])
+def get_facility_by_id():
+    try:
+        facility_id = request.args.get('id')
+        conn = create_connection()
+        cur = conn.cursor()
+        
+        sql = """SELECT * FROM access_health WHERE id = %s"""
+        
+        cur.execute(sql, (facility_id,))
+        result = cur.fetchone()
+        
+        if not result:
+            return jsonify({"message": "No facilities found"}), 404
+        
+        return jsonify({
+            "osm_id": result[0],
+            "type": result[1],
+            "name": result[3],
+            "healthcare_speciality": result[2] if result[2] else 'chung',
+            "address": result[11],
+            "opening_hours": result[4],
+            "operator": result[5],
+            "operator_type": result[6],
+            "phone": result[7],
+            "website": result[8],
+            "wheelchair": result[9],
+        })
+
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch or process facility data", "details": str(e)}), 500
+    
+    finally:
+        if conn:
+            conn.close()
+
+# lấy mật độ dân số theo cơ sở y tế
+@data_bp.route('/facilities/density', methods=['GET'])
+def get_facility_density():
+    try:
+        conn = create_connection()
+        cur = conn.cursor()
+        
+        sql = """
+            SELECT access_health.osm_id, access_health.name, COUNT(population_points.id) AS population_count
+            FROM access_health
+            LEFT JOIN population_points ON ST_DWithin(access_health.geometry, population_points.geom, 1000)
+            GROUP BY access_health.osm_id, access_health.name
+        """
+        
+        cur.execute(sql)
+        result = cur.fetchall()
+        
+        if not result:
+            return jsonify({"message": "No facilities found"}), 404
+        
+        return jsonify({
+            "data": [
+                {
+                    "osm_id": row[0],
+                    "name": row[1],
+                    "population_count": row[2]
+                } for row in result
+            ]
+        })
+
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch or process facility data", "details": str(e)}), 500
+    
+    finally:
+        if conn:
+            conn.close()

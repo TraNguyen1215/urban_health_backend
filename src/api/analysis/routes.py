@@ -51,7 +51,7 @@ def nearest_facilities():
             WHERE a.amenity ILIKE %s
             ORDER BY a.geometry <-> ST_SetSRID(ST_MakePoint(%s, %s), 4326)
             LIMIT 5
-        """, (facility_type, lon, lat))
+        """, ('%' + facility_type + '%', lon, lat))
 
         facility_rows = cur.fetchall()
         if not facility_rows:
@@ -77,7 +77,7 @@ def nearest_facilities():
         if conn:
             conn.close()
 
-@analysis_bp.route('/shortest_path_to_facility', methods=['GET'])
+@analysis_bp.route('/shortest_path', methods=['GET'])
 def shortest_path_to_facility():
     conn = None
     try:
@@ -118,7 +118,7 @@ def shortest_path_to_facility():
                 LIMIT 1
             ) r ON true
             WHERE a.name ILIKE %s
-        """, (name,))
+        """, ('%' + name + '%',))
         facility_row = cur.fetchone()
         if not facility_row:
             return jsonify({"error": "Không tìm thấy cơ sở y tế với ID đã cho"}), 404
