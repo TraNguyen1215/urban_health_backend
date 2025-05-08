@@ -2,53 +2,114 @@ import logging
 import os
 from flask import jsonify, request
 from src.utils.db_utils import *
+from src.utils.geocoding import geocode_address
 from . import analysis_bp
 
 logger = logging.getLogger(__name__)
 
-@analysis_bp.route('/nearest_facility', methods=['GET'])
-def nearest_facility():
+@analysis_bp.route('/nearest_facility_network', methods=['GET'])
+def nearest_facility_network():
     try:
-        lat = float(request.args.get('lat'))
-        lon = float(request.args.get('lon'))
-        ftype = request.args.get('type')
-        ftype= ftype
+        address = request.args.get('address')
+        if address:
+            lat, lon = geocode_address(address)
+            print(f"Geocoding result for '{address}': {lat}, {lon}")
+            if lat is None:
+                return jsonify({"error": "Không tìm được tọa độ từ địa chỉ"}), 400
+            
+            
+        facility_type = request.args.get('type')
     except (TypeError, ValueError):
-        return jsonify({"error": "Invalid or missing 'lat'/'lon' parameters"}), 400
-
-    sql = """
-        SELECT *,
-            ST_Distance(ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, access_health.geometry::geography) AS distance_meters
-        FROM public.access_health
-        {where}
-        ORDER BY access_health.geometry::geography <-> ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography
-        LIMIT 1;
-    """
-    where = "WHERE access_health.amenity = %s" if ftype else ""
-    params = [lon, lat] + ([ftype, ftype] if ftype else []) + [lon, lat]
+        return jsonify({"error": "Thiếu hoặc sai định dạng tham số"}), 400
 
     try:
         conn = create_connection()
         cur = conn.cursor()
-        cur.execute(sql.format(where=where), params)
-        result = cur.fetchone()
-        
-        print(result)
-        
-        if not result:
-            return jsonify({"message": "No facilities found"}), 404
-        
+
+        # 1. Tìm đỉnh gần nhất với vị trí người dùng
+        cur.execute("""
+            SELECT gid, source
+            FROM road_vn
+            ORDER BY geom <-> ST_SetSRID(ST_MakePoint(%s, %s), 4326)
+            LIMIT 1;
+        """, (lon, lat))
+        user_node_row = cur.fetchone()
+        if not user_node_row:
+            return jsonify({"error": "Không tìm thấy tuyến đường gần nhất"}), 404
+        user_node = user_node_row[1]  # source
+
+        # 2. Lấy danh sách các cơ sở y tế kèm theo node gần nhất trên graph
+        where_condition = "WHERE amenity = %s" if facility_type else ""
+        parameters = [facility_type] if facility_type else []
+
+        cur.execute(f"""
+            SELECT 
+                access_health.id, 
+                access_health.name, 
+                access_health.amenity, 
+                access_health.geometry,
+                road_vn.source AS node_id
+            FROM access_health
+            JOIN road_vn
+                ON ST_DWithin(access_health.geometry::geography, road_vn.geom::geography, 100)
+            {where_condition};
+        """, parameters)
+
+        facility_rows = cur.fetchall()
+        if not facility_rows:
+            return jsonify({"message": "Không tìm thấy cơ sở y tế gần"}), 404
+
+        facilities = [
+            {
+                "osm_id": row[0],
+                "name": row[1],
+                "amenity": row[2],
+                "geometry": row[3],
+                "node_id": row[4]
+            }
+            for row in facility_rows
+        ]
+
+        facility_node_ids = [str(f["node_id"]) for f in facilities]
+        facility_node_list = ','.join(facility_node_ids)
+
+        # 3. Tính đường đi ngắn nhất từ node của người dùng đến tất cả node cơ sở y tế
+        cur.execute(f"""
+            SELECT * FROM pgr_dijkstra(
+                'SELECT gid, source, target, cost FROM road_vn',
+                %s,
+                ARRAY[{facility_node_list}],
+                directed := false
+            );
+        """, (user_node,))
+
+        dijkstra_rows = cur.fetchall()
+        if not dijkstra_rows:
+            return jsonify({"error": "Không tìm thấy tuyến đường đến cơ sở y tế nào"}), 404
+
+        # 4. Tìm node có chi phí nhỏ nhất (gần nhất theo mạng lưới đường)
+        shortest = min(dijkstra_rows, key=lambda x: x[3])  # cost
+        best_node_id = shortest[2]  # node_to
+
+        # 5. Trả lại thông tin cơ sở y tế tương ứng
+        best_facility = next((f for f in facilities if f["node_id"] == best_node_id), None)
+        if not best_facility:
+            return jsonify({"error": "Lỗi ánh xạ cơ sở y tế"}), 500
+
         return jsonify({
-            "osm_id": result[0],
-            "type": result[1],
-            "name": result[3],
-            "healthcare_speciality": result[2],
-            "distance_meters": result[-1]
+            "osm_id": best_facility["osm_id"],
+            "name": best_facility["name"],
+            "type": best_facility["amenity"],
+            "distance_cost": shortest[3]
         })
-        
+
     except Exception as e:
-        logger.error(f"Nearest facility error: {e}", exc_info=True)
-        return jsonify({"error": "Failed to find nearest facility", "details": str(e)}), 500
+        logger.error(f"Lỗi tìm kiếm cơ sở y tế theo tuyến đường: {e}", exc_info=True)
+        return jsonify({"error": "Lỗi nội bộ", "details": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 
 @analysis_bp.route('/buffer', methods=['GET'])
