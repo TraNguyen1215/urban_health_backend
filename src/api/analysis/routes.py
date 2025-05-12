@@ -1,8 +1,6 @@
 import logging
-import os
-from flask import jsonify, request
+from flask import json, jsonify, request
 from src.utils.db_utils import *
-from src.utils.geocoding import geocode_address
 from . import analysis_bp
 
 logger = logging.getLogger(__name__)
@@ -11,13 +9,12 @@ logger = logging.getLogger(__name__)
 def nearest_facilities():
     conn = None
     try:
-        # Nhận địa chỉ và chuyển đổi thành tọa độ
-        address = request.args.get('address')
-        if address:
-            lat, lon = geocode_address(address)
-            print(f"Geocoding result for '{address}': {lat}, {lon}")
-            if lat is None:
-                return jsonify({"error": "Không tìm được tọa độ từ địa chỉ"}), 400
+        # Nhận địa chỉ và chuyển đổi thành tọa độ        
+        lat = request.args.get('lat')
+        lon = request.args.get('lon')
+        
+        if not lat or not lon:
+            return jsonify({"error": "Thiếu tham số tọa độ (lat, lon)"}), 400
 
         facility_type = request.args.get('type')
         # viết thường
@@ -29,7 +26,7 @@ def nearest_facilities():
         # Tìm đỉnh gần nhất với vị trí người dùng
         cur.execute("""
             SELECT gid, source
-            FROM road_vn
+            FROM road_hn
             ORDER BY geom <-> ST_SetSRID(ST_MakePoint(%s, %s), 4326)
             LIMIT 1;
         """, (lon, lat))
@@ -40,12 +37,12 @@ def nearest_facilities():
 
         # Lấy danh sách 5 cơ sở y tế gần nhất
         cur.execute("""
-            SELECT a.id, a.name, a.amenity, a.geometry, r.source AS node_id
+            SELECT a.id, a.name, a.amenity,ST_AsGeoJSON(a.geometry)::json AS geometry, r.source AS node_id
             FROM access_health a
             JOIN LATERAL (
                 SELECT source
-                FROM road_vn
-                ORDER BY road_vn.geom <-> a.geometry
+                FROM road_hn
+                ORDER BY road_hn.geom <-> a.geometry
                 LIMIT 1
             ) r ON true
             WHERE a.amenity ILIKE %s
@@ -81,24 +78,20 @@ def nearest_facilities():
 def shortest_path_to_facility():
     conn = None
     try:
-        # Nhận địa chỉ người dùng và cơ sở y tế
-        address = request.args.get('address')
+        lat = request.args.get('lat')
+        lon = request.args.get('lon')
         name = request.args.get('name')
-        if address and name:
-            lat, lon = geocode_address(address)
-            print(f"Geocoding result for '{address}': {lat}, {lon}")
-            if lat is None:
-                return jsonify({"error": "Không tìm được tọa độ từ địa chỉ"}), 400
-        else:
-            return jsonify({"error": "Thiếu tham số địa chỉ hoặc ID cơ sở y tế"}), 400
+
+        if not lat or not lon or not name:
+            return jsonify({"error": "Thiếu tham số tọa độ (lat, lon) hoặc tên cơ sở y tế"}), 400
 
         conn = create_connection()
         cur = conn.cursor()
 
         # Tìm đỉnh gần nhất với vị trí người dùng
         cur.execute("""
-            SELECT gid, source
-            FROM road_vn
+            SELECT gid, source, target
+            FROM road_hn
             ORDER BY geom <-> ST_SetSRID(ST_MakePoint(%s, %s), 4326)
             LIMIT 1;
         """, (lon, lat))
@@ -107,48 +100,73 @@ def shortest_path_to_facility():
             return jsonify({"error": "Không tìm thấy tuyến đường gần nhất"}), 404
         user_node = user_node_row[1]
 
-        # Lấy thông tin của cơ sở y tế cần tính đường đi
+        # Lấy thông tin của cơ sở y tế gần nhất theo tên
         cur.execute("""
-            SELECT a.id, a.name, a.amenity, r.source AS node_id
+            SELECT a.id, a.name, a.amenity, a.geometry, r.source AS node_id
             FROM access_health a
             JOIN LATERAL (
                 SELECT source
-                FROM road_vn
-                ORDER BY road_vn.geom <-> a.geometry
+                FROM road_hn
+                ORDER BY road_hn.geom <-> a.geometry
                 LIMIT 1
             ) r ON true
             WHERE a.name ILIKE %s
+            LIMIT 1;
         """, ('%' + name + '%',))
         facility_row = cur.fetchone()
         if not facility_row:
-            return jsonify({"error": "Không tìm thấy cơ sở y tế với ID đã cho"}), 404
+            return jsonify({"error": "Không tìm thấy cơ sở y tế"}), 404
 
-        facility = {
-            "osm_id": facility_row[0],
-            "name": facility_row[1],
-            "amenity": facility_row[2],
-            "node_id": facility_row[3]
-        }
+        facility_id, facility_name, facility_type, facility_geom, facility_node = facility_row
 
-        # Tính toán đường đi ngắn nhất từ người dùng đến cơ sở y tế
+        # Tính toán đường đi ngắn nhất bằng pgr_dijkstra
         cur.execute("""
-            SELECT agg_cost FROM pgr_dijkstra(
-                'SELECT gid AS id, source, target, cost FROM road_vn',
+            SELECT edge
+            FROM pgr_dijkstra(
+                'SELECT gid AS id, source, target, cost FROM road_hn',
                 %s, %s, directed := false
-            ) WHERE end_vid = %s
-        """, (user_node, facility["node_id"], facility["node_id"]))
-        
-
-        result = cur.fetchall()
-        if not result:
+            )
+        """, (user_node, facility_node))
+        path_edges = [str(row[0]) for row in cur.fetchall()]
+        if not path_edges:
             return jsonify({"error": "Không tìm thấy tuyến đường đến cơ sở y tế"}), 404
 
-        cost = result[-1][0]
+        # Tính tổng chi phí quãng đường
+        cur.execute("""
+            SELECT SUM(cost) 
+            FROM road_hn 
+            WHERE gid IN ({})
+        """.format(','.join(path_edges)))
+        cost = cur.fetchone()[0]
+
+        # Truy xuất tuyến đường dưới dạng GeoJSON
+        cur.execute("""
+            SELECT ST_AsGeoJSON(ST_Union(geom)) 
+            FROM road_hn 
+            WHERE gid IN ({})
+        """.format(','.join(path_edges)))
+        route_geojson = cur.fetchone()[0]
+
+        # Lấy tọa độ của cơ sở y tế
+        cur.execute("""
+            SELECT ST_X(ST_Centroid(geometry)), ST_Y(ST_Centroid(geometry))
+            FROM access_health
+            WHERE id = %s
+
+        """, (facility_id,))
+        end_coords = cur.fetchone()
+        if not end_coords:
+            return jsonify({"error": "Không tìm được tọa độ cơ sở y tế"}), 500
+
         return jsonify({
-            "osm_id": facility["osm_id"],
-            "name": facility["name"],
-            "type": facility["amenity"],
-            "distance_cost": round(cost, 2)
+            "route": json.loads(route_geojson),
+            "data": {
+                "start": [float(lon), float(lat)],
+                "end": [end_coords[0], end_coords[1]],
+                "name": facility_name,
+                "address": "",  # Có thể bổ sung nếu có cột địa chỉ
+                "distance_cost": round(cost, 2)
+            }
         })
 
     except Exception as e:
@@ -194,7 +212,7 @@ def population_in_buffer():
             conn.close()
 
 
-@analysis_bp.route('/population_stats_by_distance', methods=['GET']) # dùng để phân tích dân số theo khoảng cách từ cơ sở y tế
+@analysis_bp.route('/population_stats_by_distance', methods=['GET'])
 def population_stats():
     ftype = request.args.get('type')
     where = "WHERE access_health.amenity = %s" if ftype else ""
